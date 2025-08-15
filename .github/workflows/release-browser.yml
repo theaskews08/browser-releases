@@ -8,11 +8,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # --- Use PAT for source repo (voqal/browser-dev) ---
+      # ----- SOURCE: read from voqal/browser-dev using your PAT -----
       - name: List Releases from voqal/browser-dev
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -39,12 +40,13 @@ jobs:
           echo "Downloaded files:"
           ls -al || true
 
-      # --- Use built-in token for destination repo ---
+      # ----- DESTINATION: create draft release in THIS repo -----
       - name: Create Draft Release in THIS repo (upload whatever exists)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # built-in token for this repo
           TAG: ${{ env.LATEST_RELEASE }}
         run: |
+          # Collect any available assets (don’t fail if some types don’t exist)
           assets=$(ls *.dmg *.msi *.deb 2>/dev/null || true)
 
           if [ -z "$assets" ]; then
@@ -55,8 +57,9 @@ jobs:
           echo "Assets to upload:"
           echo "$assets"
 
+          # If release/tag already exists here, remove it to avoid collision
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release tag '$TAG' already exists. Deleting old one…"
+            echo "Release tag '$TAG' already exists. Deleting existing draft…"
             gh release delete "$TAG" --yes || true
             git tag -d "$TAG" || true
           fi
