@@ -4,88 +4,228 @@ on:
   workflow_dispatch:
     inputs:
       source_repo:
-        description: "owner/repo of source (e.g., voqal/browser-dev)"
+        description: "Source repo (owner/repo format)"
         required: true
         default: "voqal/browser-dev"
+      target_tag_prefix:
+        description: "Prefix for release tag (optional)"
+        required: false
+        default: ""
 
 jobs:
-  get_asset:
+  mirror_release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
+    
     env:
       SOURCE_REPO: ${{ inputs.source_repo }}
+      TAG_PREFIX: ${{ inputs.target_tag_prefix }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ---- Quick sanity check: can we see the source repo with your PAT? ----
-      - name: Verify access to ${{ env.SOURCE_REPO }}
+      - name: Verify Source Repository Access
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          echo "Checking repo: $SOURCE_REPO"
-          gh repo view "$SOURCE_REPO" --json name,visibility,owner || {
-            echo "::error::Cannot access '$SOURCE_REPO'."
-            echo "Likely causes:"
-            echo "  1) Wrong repo slug (owner/name)."
-            echo "  2) PAT lacks access or needs SSO org authorization."
-            echo "  3) Repo is on GitHub Enterprise, not github.com."
+          echo "🔍 Checking access to source repo: $SOURCE_REPO"
+          
+          if ! gh repo view "$SOURCE_REPO" --json name,visibility,owner > /dev/null 2>&1; then
+            echo "❌ Cannot access repository '$SOURCE_REPO'"
+            echo ""
+            echo "Possible solutions:"
+            echo "1. Verify the repository name is correct (owner/repo format)"
+            echo "2. Check that your PRIVATE_REPO_TOKEN has 'repo' scope"
+            echo "3. If this is an organization repo with SSO, authorize your token:"
+            echo "   - Go to GitHub Settings → Applications → Personal access tokens"
+            echo "   - Find your token and click 'Enable SSO' for the organization"
+            echo "4. Ensure the repository exists and is accessible"
             exit 1
-          }
+          fi
+          
+          echo "✅ Successfully verified access to $SOURCE_REPO"
+          gh repo view "$SOURCE_REPO" --json name,visibility,owner
 
-      # ---- List and fetch the latest release tag from the source ----
-      - name: List Releases (source)
-        env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-        run: gh release list --repo "$SOURCE_REPO" --limit 5
-
-      - name: Fetch Latest Release Tag (source)
-        id: latest
+      - name: List Available Releases
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
+          echo "📋 Available releases in $SOURCE_REPO:"
+          gh release list --repo "$SOURCE_REPO" --limit 10
+
+      - name: Get Latest Release Information
+        id: latest_release
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          echo "🔍 Fetching latest release from $SOURCE_REPO..."
+          
           LATEST_RELEASE=$(gh release list --repo "$SOURCE_REPO" --limit 1 --json tagName --jq '.[0].tagName')
+          
           if [ -z "$LATEST_RELEASE" ] || [ "$LATEST_RELEASE" = "null" ]; then
-            echo "No releases found in $SOURCE_REPO"
+            echo "❌ No releases found in $SOURCE_REPO"
             exit 1
           fi
+          
+          # Apply prefix if specified
+          if [ -n "$TAG_PREFIX" ]; then
+            TARGET_TAG="${TAG_PREFIX}${LATEST_RELEASE}"
+          else
+            TARGET_TAG="$LATEST_RELEASE"
+          fi
+          
+          echo "✅ Latest release: $LATEST_RELEASE"
+          echo "🏷️ Target tag: $TARGET_TAG"
+          
           echo "LATEST_RELEASE=$LATEST_RELEASE" >> "$GITHUB_ENV"
+          echo "TARGET_TAG=$TARGET_TAG" >> "$GITHUB_ENV"
           echo "latest=$LATEST_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET_TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Download Latest Release Assets (source)
+      - name: Download Release Assets
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          gh release download --repo "$SOURCE_REPO" "${{ env.LATEST_RELEASE }}" --dir .
-          echo "Downloaded files:"
-          ls -al || true
-
-      # ---- Create draft release in THIS repo (destination) ----
-      - name: Create Draft Release in THIS repo (upload whatever exists)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # built-in, write to this repo
-          TAG: ${{ env.LATEST_RELEASE }}
-        run: |
-          assets=$(ls *.dmg *.msi *.deb 2>/dev/null || true)
-
-          if [ -z "$assets" ]; then
-            echo "No assets found (*.dmg|*.msi|*.deb) to upload."
+          echo "⬇️ Downloading assets from release $LATEST_RELEASE..."
+          
+          # Create a clean directory for downloads
+          mkdir -p downloads
+          cd downloads
+          
+          # Download all assets from the latest release
+          if ! gh release download --repo "$SOURCE_REPO" "$LATEST_RELEASE" --dir .; then
+            echo "❌ Failed to download assets from release $LATEST_RELEASE"
             exit 1
           fi
+          
+          echo "✅ Downloaded files:"
+          ls -la
+          
+          # Count assets by type for reporting
+          dmg_count=$(ls *.dmg 2>/dev/null | wc -l || echo "0")
+          msi_count=$(ls *.msi 2>/dev/null | wc -l || echo "0")
+          deb_count=$(ls *.deb 2>/dev/null | wc -l || echo "0")
+          exe_count=$(ls *.exe 2>/dev/null | wc -l || echo "0")
+          
+          echo "📊 Asset summary:"
+          echo "  .dmg files: $dmg_count"
+          echo "  .msi files: $msi_count"
+          echo "  .deb files: $deb_count"
+          echo "  .exe files: $exe_count"
+          
+          # Move back to root
+          cd ..
+          mv downloads/* . 2>/dev/null || true
 
-          echo "Assets to upload:"
-          echo "$assets"
+      - name: Prepare Release Assets
+        id: prepare_assets
+        run: |
+          echo "📦 Preparing assets for upload..."
+          
+          # Find all potential release assets
+          assets=$(ls *.dmg *.msi *.deb *.exe *.zip *.tar.gz *.AppImage 2>/dev/null || true)
+          
+          if [ -z "$assets" ]; then
+            echo "❌ No release assets found to upload"
+            echo "Expected file types: .dmg, .msi, .deb, .exe, .zip, .tar.gz, .AppImage"
+            exit 1
+          fi
+          
+          echo "✅ Assets ready for upload:"
+          for asset in $assets; do
+            size=$(ls -lh "$asset" | awk '{print $5}')
+            echo "  📄 $asset ($size)"
+          done
+          
+          # Store assets list for next step
+          echo "$assets" > asset_list.txt
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release tag '$TAG' already exists. Deleting existing draft…"
-            gh release delete "$TAG" --yes || true
-            git tag -d "$TAG" || true
+      - name: Check for Existing Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🔍 Checking if release $TARGET_TAG already exists in this repository..."
+          
+          if gh release view "$TARGET_TAG" >/dev/null 2>&1; then
+            echo "⚠️ Release $TARGET_TAG already exists. Deleting to recreate..."
+            gh release delete "$TARGET_TAG" --yes || true
+            
+            # Also remove the git tag if it exists
+            if git tag -l | grep -q "^$TARGET_TAG$"; then
+              echo "🗑️ Removing existing git tag..."
+              git tag -d "$TARGET_TAG" || true
+              git push origin --delete "$TARGET_TAG" || true
+            fi
+          else
+            echo "✅ No existing release found. Ready to create new release."
           fi
 
-          gh release create "$TAG" $assets \
-            -t "$TAG" \
-            --draft \
-            --generate-notes
+      - name: Create Draft Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🚀 Creating draft release $TARGET_TAG..."
+          
+          # Read asset list
+          assets=$(cat asset_list.txt)
+          
+          # Get release notes from source if available
+          source_notes=""
+          if command -v gh >/dev/null 2>&1; then
+            # Try to get the original release notes
+            temp_token="$GH_TOKEN"
+            export GH_TOKEN="${{ secrets.PRIVATE_REPO_TOKEN }}"
+            source_notes=$(gh release view "$LATEST_RELEASE" --repo "$SOURCE_REPO" --json body --jq '.body' 2>/dev/null || echo "")
+            export GH_TOKEN="$temp_token"
+          fi
+          
+          # Create release notes
+          if [ -n "$source_notes" ] && [ "$source_notes" != "null" ]; then
+            release_notes="$source_notes
+
+---
+*This release mirrors $SOURCE_REPO release $LATEST_RELEASE*"
+          else
+            release_notes="Release $TARGET_TAG
+
+This release mirrors the latest assets from $SOURCE_REPO.
+
+**Source Release:** $LATEST_RELEASE  
+**Mirrored on:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+**Assets included:**
+$(for asset in $assets; do echo "- $asset"; done)"
+          fi
+          
+          # Create the release
+          echo "$release_notes" > release_notes.md
+          
+          gh release create "$TARGET_TAG" $assets \
+            --title "Browser Release $TARGET_TAG" \
+            --notes-file release_notes.md \
+            --draft
+          
+          echo "✅ Draft release created successfully!"
+          echo "🔗 View at: ${{ github.server_url }}/${{ github.repository }}/releases/tag/$TARGET_TAG"
+
+      - name: Release Summary
+        run: |
+          echo "🎉 Release workflow completed successfully!"
+          echo ""
+          echo "📋 Summary:"
+          echo "  Source: $SOURCE_REPO (release $LATEST_RELEASE)"
+          echo "  Target: ${{ github.repository }} (release $TARGET_TAG)"
+          echo "  Status: Draft created"
+          echo ""
+          echo "🔗 Next steps:"
+          echo "1. Go to the Releases page in this repository"
+          echo "2. Review the draft release"
+          echo "3. Edit release notes if needed"
+          echo "4. Publish the release when ready"
+          echo ""
+          echo "📄 Assets uploaded:"
+          cat asset_list.txt | while read asset; do
+            echo "  ✓ $asset"
+          done
