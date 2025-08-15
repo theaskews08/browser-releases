@@ -1,0 +1,76 @@
+name: Find Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_term:
+        description: "Search for repositories containing this term"
+        required: true
+        default: "browser"
+      owner_name:
+        description: "Organization or user name (if known)"
+        required: false
+        default: ""
+
+jobs:
+  find_repo:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Search for Repositories
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          SEARCH_TERM: ${{ inputs.search_term }}
+          OWNER_NAME: ${{ inputs.owner_name }}
+        run: |
+          echo "🔍 Searching for repositories..."
+          echo ""
+          
+          # If owner is specified, search within that owner
+          if [ -n "$OWNER_NAME" ]; then
+            echo "🏢 Searching repositories owned by '$OWNER_NAME':"
+            gh repo list "$OWNER_NAME" --limit 20 --json name,fullName,visibility,description 2>/dev/null | \
+              jq -r '.[] | "  📁 \(.fullName) (\(.visibility)) - \(.description // "No description")"' || {
+              echo "  ❌ Cannot access repositories for '$OWNER_NAME'"
+              echo "     This could mean the organization doesn't exist or is private"
+            }
+            echo ""
+            
+            echo "🔍 Searching for '$SEARCH_TERM' in '$OWNER_NAME' repositories:"
+            gh search repos "$SEARCH_TERM" --owner "$OWNER_NAME" --limit 10 --json fullName,visibility,description 2>/dev/null | \
+              jq -r '.[] | "  📁 \(.fullName) (\(.visibility)) - \(.description // "No description")"' || {
+              echo "  ❌ No repositories found matching '$SEARCH_TERM' for owner '$OWNER_NAME'"
+            }
+          else
+            echo "🌐 Searching all public repositories containing '$SEARCH_TERM':"
+            gh search repos "$SEARCH_TERM" --limit 15 --json fullName,visibility,description,stargazersCount 2>/dev/null | \
+              jq -r '.[] | "  📁 \(.fullName) (\(.visibility)) ⭐\(.stargazersCount) - \(.description // "No description")"' || {
+              echo "  ❌ Search failed"
+            }
+          fi
+          
+          echo ""
+          echo "🔍 Also searching for common variations:"
+          
+          # Search for common browser-related repo names
+          search_terms=("browser-dev" "browser" "electron-browser" "web-browser" "browser-app")
+          
+          for term in "${search_terms[@]}"; do
+            echo ""
+            echo "  Searching for '$term'..."
+            results=$(gh search repos "$term" --limit 3 --json fullName,visibility 2>/dev/null | jq -r '.[].fullName' 2>/dev/null || echo "")
+            if [ -n "$results" ]; then
+              echo "$results" | sed 's/^/    📁 /'
+            else
+              echo "    No results"
+            fi
+          done
+          
+          echo ""
+          echo "💡 Tips:"
+          echo "1. If you found the repository above, use its full name (owner/repo)"
+          echo "2. Make sure you have access to the repository (it should be public or you should be a collaborator)"
+          echo "3. If it's in a private organization, you may need to be invited"
+          echo "4. Try running this search again with different search terms"
