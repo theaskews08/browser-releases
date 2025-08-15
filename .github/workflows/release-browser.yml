@@ -8,32 +8,28 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}   # set token globally for gh CLI
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: List Releases from voqal/browser-dev
         run: gh release list --repo voqal/browser-dev
-        env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
 
       - name: Fetch Latest Release Tag from voqal/browser-dev
         run: |
           LATEST_RELEASE=$(gh release list --repo voqal/browser-dev --limit 1 --json tagName --jq '.[0].tagName')
           echo "LATEST_RELEASE=$LATEST_RELEASE" >> $GITHUB_ENV
-        env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
 
       - name: Download Latest Release Assets
         run: |
           gh release download --repo voqal/browser-dev "${{ env.LATEST_RELEASE }}" --dir .
           ls -al
-        env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
 
       - name: Create Draft Release in THIS repo
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # use built-in token for this repo
         run: |
           TAG="${{ env.LATEST_RELEASE }}"
           gh release create "$TAG" *.dmg *.msi *.deb \
