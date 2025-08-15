@@ -12,19 +12,16 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # --- Auth for SOURCE repo (voqal/browser-dev) using your PAT ---
-      - name: Authenticate gh (source)
-        env:
-          GITHUB_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}   # your PAT
-        run: |
-          echo "$GITHUB_TOKEN" | gh auth login --hostname github.com --with-token
-          gh auth status
-
+      # --- Use PAT for source repo (voqal/browser-dev) ---
       - name: List Releases from voqal/browser-dev
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: gh release list --repo voqal/browser-dev
 
       - name: Fetch Latest Release Tag from voqal/browser-dev
         id: latest
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
           LATEST_RELEASE=$(gh release list --repo voqal/browser-dev --limit 1 --json tagName --jq '.[0].tagName')
           if [ -z "$LATEST_RELEASE" ] || [ "$LATEST_RELEASE" = "null" ]; then
@@ -35,24 +32,19 @@ jobs:
           echo "latest=$LATEST_RELEASE" >> "$GITHUB_OUTPUT"
 
       - name: Download Latest Release Assets
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
           gh release download --repo voqal/browser-dev "${{ env.LATEST_RELEASE }}" --dir .
           echo "Downloaded files:"
           ls -al || true
 
-      # --- Auth for DESTINATION (this repo) using built-in token ---
-      - name: Authenticate gh (destination)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}         # auto-provided, has write to this repo
-        run: |
-          echo "$GITHUB_TOKEN" | gh auth login --hostname github.com --with-token
-          gh auth status
-
+      # --- Use built-in token for destination repo ---
       - name: Create Draft Release in THIS repo (upload whatever exists)
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ env.LATEST_RELEASE }}
         run: |
-          # Collect any matching assets. Don't fail if some types are missing.
           assets=$(ls *.dmg *.msi *.deb 2>/dev/null || true)
 
           if [ -z "$assets" ]; then
@@ -63,9 +55,8 @@ jobs:
           echo "Assets to upload:"
           echo "$assets"
 
-          # If tag already exists here, delete draft (or skip) to avoid collision.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release tag '$TAG' already exists in this repo. Deleting draft to recreate…"
+            echo "Release tag '$TAG' already exists. Deleting old one…"
             gh release delete "$TAG" --yes || true
             git tag -d "$TAG" || true
           fi
