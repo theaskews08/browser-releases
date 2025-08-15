@@ -1,0 +1,70 @@
+name: Debug Repository Access
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_repo:
+        description: "Repository to test (owner/repo format)"
+        required: true
+        default: "voqal/browser-dev"
+
+jobs:
+  debug_access:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Test Token and Find Repository
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          TEST_REPO: ${{ inputs.test_repo }}
+        run: |
+          echo "🔍 Testing access with your PRIVATE_REPO_TOKEN..."
+          
+          # Check if gh CLI can authenticate
+          if ! gh auth status 2>/dev/null; then
+            echo "❌ Token authentication failed"
+            echo "Check that PRIVATE_REPO_TOKEN is set correctly in repository secrets"
+            exit 1
+          fi
+          
+          echo "✅ Token authentication successful"
+          echo ""
+          
+          # Test the specific repository
+          echo "🔍 Testing access to: $TEST_REPO"
+          if gh repo view "$TEST_REPO" --json name,owner,visibility 2>/dev/null; then
+            echo "✅ Successfully accessed $TEST_REPO"
+            echo ""
+            echo "📋 Recent releases:"
+            gh release list --repo "$TEST_REPO" --limit 5 2>/dev/null || echo "No releases found"
+          else
+            echo "❌ Cannot access $TEST_REPO"
+            echo ""
+            echo "🔍 Let's search for similar repositories..."
+            
+            # Extract owner from the repo string
+            owner=$(echo "$TEST_REPO" | cut -d'/' -f1)
+            repo_name=$(echo "$TEST_REPO" | cut -d'/' -f2)
+            
+            echo "Searching for repositories owned by '$owner'..."
+            gh repo list "$owner" --limit 10 --json name,visibility 2>/dev/null || {
+              echo "Cannot list repositories for owner '$owner'"
+              echo ""
+              echo "This could mean:"
+              echo "1. The owner name is incorrect"
+              echo "2. The repositories are private and your token doesn't have access"
+              echo "3. This is an organization with restricted access"
+            }
+            
+            echo ""
+            echo "🔍 Searching for repositories containing '$repo_name'..."
+            gh search repos "$repo_name" --owner "$owner" --limit 5 --json name,fullName,visibility 2>/dev/null || {
+              echo "Search failed - this might indicate token permission issues"
+            }
+          fi
+          
+          echo ""
+          echo "🔑 Token Information:"
+          gh auth status
