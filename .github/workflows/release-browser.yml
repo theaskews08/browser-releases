@@ -2,6 +2,11 @@ name: Release Browser
 
 on:
   workflow_dispatch:
+    inputs:
+      source_repo:
+        description: "owner/repo of source (e.g., voqal/browser-dev)"
+        required: true
+        default: "voqal/browser-dev"
 
 jobs:
   get_asset:
@@ -9,44 +14,61 @@ jobs:
     permissions:
       contents: write
 
+    env:
+      SOURCE_REPO: ${{ inputs.source_repo }}
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ----- SOURCE: read from voqal/browser-dev using your PAT -----
-      - name: List Releases from voqal/browser-dev
+      # ---- Quick sanity check: can we see the source repo with your PAT? ----
+      - name: Verify access to ${{ env.SOURCE_REPO }}
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-        run: gh release list --repo voqal/browser-dev
+        run: |
+          echo "Checking repo: $SOURCE_REPO"
+          gh repo view "$SOURCE_REPO" --json name,visibility,owner || {
+            echo "::error::Cannot access '$SOURCE_REPO'."
+            echo "Likely causes:"
+            echo "  1) Wrong repo slug (owner/name)."
+            echo "  2) PAT lacks access or needs SSO org authorization."
+            echo "  3) Repo is on GitHub Enterprise, not github.com."
+            exit 1
+          }
 
-      - name: Fetch Latest Release Tag from voqal/browser-dev
+      # ---- List and fetch the latest release tag from the source ----
+      - name: List Releases (source)
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: gh release list --repo "$SOURCE_REPO" --limit 5
+
+      - name: Fetch Latest Release Tag (source)
         id: latest
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          LATEST_RELEASE=$(gh release list --repo voqal/browser-dev --limit 1 --json tagName --jq '.[0].tagName')
+          LATEST_RELEASE=$(gh release list --repo "$SOURCE_REPO" --limit 1 --json tagName --jq '.[0].tagName')
           if [ -z "$LATEST_RELEASE" ] || [ "$LATEST_RELEASE" = "null" ]; then
-            echo "No releases found in voqal/browser-dev"
+            echo "No releases found in $SOURCE_REPO"
             exit 1
           fi
           echo "LATEST_RELEASE=$LATEST_RELEASE" >> "$GITHUB_ENV"
           echo "latest=$LATEST_RELEASE" >> "$GITHUB_OUTPUT"
 
-      - name: Download Latest Release Assets
+      - name: Download Latest Release Assets (source)
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          gh release download --repo voqal/browser-dev "${{ env.LATEST_RELEASE }}" --dir .
+          gh release download --repo "$SOURCE_REPO" "${{ env.LATEST_RELEASE }}" --dir .
           echo "Downloaded files:"
           ls -al || true
 
-      # ----- DESTINATION: create draft release in THIS repo -----
+      # ---- Create draft release in THIS repo (destination) ----
       - name: Create Draft Release in THIS repo (upload whatever exists)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # built-in token for this repo
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # built-in, write to this repo
           TAG: ${{ env.LATEST_RELEASE }}
         run: |
-          # Collect any available assets (don’t fail if some types don’t exist)
           assets=$(ls *.dmg *.msi *.deb 2>/dev/null || true)
 
           if [ -z "$assets" ]; then
@@ -57,7 +79,6 @@ jobs:
           echo "Assets to upload:"
           echo "$assets"
 
-          # If release/tag already exists here, remove it to avoid collision
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release tag '$TAG' already exists. Deleting existing draft…"
             gh release delete "$TAG" --yes || true
